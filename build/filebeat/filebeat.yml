@@ -1,0 +1,11 @@
+filebeat.inputs:
+  - type: filestream
+    id: apache
+    paths: ["/var/log/test_logs/*_access.log"]
+    fields:
+      log_type: apache_access
+    fields_under_root: true
+
+output.logstash:
+  hosts: ["logstash:5044"]
+  ssl.enabled: false
