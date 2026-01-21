@@ -1,12 +1,22 @@
 import ipaddress
 import json
 import logging
+from functools import lru_cache
 
 import joblib
 import pandas as pd
 import numpy as np
+from scipy import sparse
 from sklearn.feature_extraction.text import HashingVectorizer
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder
+
+
+@lru_cache(maxsize=100000)
+def _ip_to_int(value: str) -> int:
+    try:
+        return int(ipaddress.ip_address(value))
+    except Exception:
+        return 0
 
 
 class LogVertorizer:
@@ -58,7 +68,7 @@ class LogVertorizer:
             self.insufficent_columns = insufficent_columns
 
         if ohe_filepath is None or ohe_filepath == "":
-            self.ohe_enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+            self.ohe_enc = OneHotEncoder(sparse_output=True, handle_unknown="ignore")
         else:
             self.ohe_enc = joblib.load(ohe_filepath)
 
@@ -78,13 +88,15 @@ class LogVertorizer:
         if len(paths) == 0:
             raise ValueError('Could not initialize data from empty logs')
 
-        df = pd.DataFrame()
-
+        frames = []
         for path in paths:
-            df = pd.concat([df.copy(), pd.json_normalize(pd.read_json(path, lines=True).to_dict("records"), sep=".")],
-                           axis=1)
-
-        return df
+            frames.append(
+                pd.json_normalize(
+                    pd.read_json(path, lines=True).to_dict("records"),
+                    sep=".",
+                )
+            )
+        return pd.concat(frames, axis=0, ignore_index=True)
 
     def ecs2pandas(self, data: str) -> pd.DataFrame:
         """ Gets the string in ecs format and returns it as a pandas dataframe, vectorized """
@@ -96,32 +108,29 @@ class LogVertorizer:
 
     def drop_insufficent_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """ Drops columns that have insufficient values """
-        # logging.info(df.columns)
-        for col in self.insufficent_columns:
-            try:
-                df = df.drop(col, axis=1)
-            except KeyError:
-                continue
-                # logging.info("Could not drop column: %s", col)
-
+        cols = [col for col in self.insufficent_columns if col in df.columns]
+        if cols:
+            df = df.drop(columns=cols)
         return df
 
-    def encode_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+    def encode_columns(self, df: pd.DataFrame) -> sparse.csr_matrix:
         """ Encodes columns """
         df_ohe = df[self.ohe_encoding_features].fillna("missing").copy()
         df_ohe = self._normalize_ohe_input(df_ohe)
-        ohe_df = pd.DataFrame(
-            self.ohe_enc.transform(df_ohe),
-            columns=self.ohe_enc.get_feature_names_out(self.ohe_encoding_features)
-        )
+        ohe_out = self.ohe_enc.transform(df_ohe)
+        if not sparse.issparse(ohe_out):
+            ohe_out = sparse.csr_matrix(ohe_out)
 
-        le_dfs = []
+        le_sparse = []
         for col in self.le_encoding_features:
             col_data = self._normalize_le_input(df[col])
-            le_dfs.append(pd.DataFrame(self.le_encoder.transform(col_data), columns=[col + "_le"]))
-        le_df = pd.concat(le_dfs, axis=1)
+            le_vals = self.le_encoder.transform(col_data).reshape(-1, 1)
+            le_sparse.append(sparse.csr_matrix(le_vals))
 
-        return pd.concat([ohe_df, le_df], axis=1)
+        if le_sparse:
+            le_out = sparse.hstack(le_sparse, format="csr")
+            return sparse.hstack([ohe_out, le_out], format="csr")
+        return ohe_out
 
     def _normalize_ohe_input(self, df_ohe: pd.DataFrame) -> pd.DataFrame:
         if not hasattr(self.ohe_enc, "categories_"):
@@ -133,12 +142,13 @@ class LogVertorizer:
                 cats_set = set(categories.tolist())
                 default_val = categories[0] if len(categories) else 0
                 series = pd.to_numeric(df_ohe[col], errors="coerce").fillna(default_val)
-                df_ohe[col] = series.map(lambda v: v if v in cats_set else default_val)
+                series = series.where(series.isin(cats_set), default_val)
+                df_ohe[col] = series
             else:
                 cats_set = set([str(x) for x in categories])
                 default_val = "missing" if "missing" in cats_set else (next(iter(cats_set)) if cats_set else "missing")
                 series = df_ohe[col].astype(str)
-                df_ohe[col] = series.map(lambda v: v if v in cats_set else default_val)
+                df_ohe[col] = series.where(series.isin(cats_set), default_val)
         return df_ohe
 
     def _normalize_le_input(self, series: pd.Series) -> pd.Series:
@@ -148,7 +158,7 @@ class LogVertorizer:
         classes_set = set(classes)
         default_val = "missing" if "missing" in classes_set else (classes[0] if classes else "missing")
         data = series.fillna(default_val).astype(str)
-        return data.map(lambda v: v if v in classes_set else default_val)
+        return data.where(data.isin(classes_set), default_val)
 
     def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
         """ Full pipeline of ECS vectorization ONLY HTTP COMPLETED"""
@@ -194,18 +204,16 @@ class LogVertorizer:
         df['month'] = df['timestamp_dt'].dt.month
         df['hour'] = df['timestamp_dt'].dt.hour
         df['minute'] = df['timestamp_dt'].dt.minute
-        df['http.response.body.bytes_log2'] = np.log2(df['http.response.body.bytes'].fillna(0) + 1)
-        df = df[df['url.path'].notna()]
+        df['http.response.body.bytes_log2'] = np.log2(
+            pd.to_numeric(df['http.response.body.bytes'], errors='coerce').fillna(0) + 1
+        )
+        df = df.loc[df['url.path'].notna()]
 
         if 'source.ip' not in df.columns:
             raise ValueError("source.ip missing")
 
-        df['ip_log2'] = np.log2(
-            df['source.ip']
-            .fillna('0.0.0.0')
-            .map(lambda x: float(int(ipaddress.ip_address(x))))
-            + 1.0
-        )
+        ip_series = df['source.ip'].fillna('0.0.0.0').astype(str)
+        df['ip_log2'] = np.log2(ip_series.map(_ip_to_int).astype(float) + 1.0)
 
         df = self.drop_insufficent_columns(df)
 
@@ -220,33 +228,32 @@ class LogVertorizer:
 
         df = df.drop('url.path', axis=1)
 
-        df = pd.concat([self.encode_columns(df), df], axis=1)
-        df.drop(self.ohe_encoding_features, axis=1, inplace=True)
-        df.drop(self.le_encoding_features, axis=1, inplace=True)
+        encoded = self.encode_columns(df)
+        drop_cols = [col for col in self.ohe_encoding_features + self.le_encoding_features if col in df.columns]
+        if drop_cols:
+            df = df.drop(columns=drop_cols)
 
-        df = self.hash_http_data(df)
+        X_hashed, df = self.hash_http_data(df)
         non_numeric_cols = df.select_dtypes(include=['object']).columns
         if len(non_numeric_cols) > 0:
             df = df.drop(columns=non_numeric_cols)
         df = df.fillna(0)  # или SimpleImputer
 
-        return df
+        if df.empty:
+            X_numeric = sparse.csr_matrix((0, 0))
+        else:
+            X_numeric = sparse.csr_matrix(df.to_numpy())
 
-    def hash_http_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        return sparse.hstack([X_hashed, encoded, X_numeric], format="csr")
+
+    def hash_http_data(self, df: pd.DataFrame) -> tuple[sparse.csr_matrix, pd.DataFrame]:
         X_dir = self.dir_vec.transform(df['url.directory'].fillna(''))
         X_file = self.file_vec.transform(df['url.file'].fillna(''))
         X_ref = self.ref_vec.transform(df['http.request.referrer'].fillna(''))
 
-        df_hashed = [
-            pd.DataFrame.sparse.from_spmatrix(
-                x, columns=[f'{['directory', 'file', 'ref'][j]}_feature_{i}' for i in range(x.shape[1])]
-            ) for j, x in enumerate([X_dir, X_file, X_ref])
-        ]
-
-        df_hashed.append(df.drop(['url.directory', 'url.file', 'http.request.referrer'], axis=1))
-        data = pd.concat(df_hashed, axis=1)
-
-        return data
+        X_hashed = sparse.hstack([X_dir, X_file, X_ref], format="csr")
+        df = df.drop(['url.directory', 'url.file', 'http.request.referrer'], axis=1)
+        return X_hashed, df
 
     def dump_vectorizer(self):
         pass

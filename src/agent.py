@@ -84,6 +84,7 @@ def run_loop():
                         "model_version": model_version or MODEL_VERSION,
                         "is_anomaly": cluster_id == -1,
                     },
+                    "event.original": source.get("event").get("original")
                 }
                 docs_for_index.append((result_doc, hit.get("_id"), ts_value))
                 logging.info("Prepared result for %s", hit.get("_id"))

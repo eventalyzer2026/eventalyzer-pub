@@ -1,6 +1,7 @@
 import joblib
 import logging
 import os
+import numpy as np
 import pandas as pd
 from scipy import sparse
 from pandas.api.types import is_sparse
@@ -52,6 +53,36 @@ class LogClassificatorModel:
 
     def _align_features(self, data: pd.DataFrame) -> pd.DataFrame:
         if not isinstance(data, pd.DataFrame):
+            expected_count = getattr(self.pipe, "n_features_in_", None)
+            actual_count = None
+            try:
+                actual_count = data.shape[1]
+            except Exception:
+                actual_count = None
+            if expected_count is not None and actual_count is not None and expected_count != actual_count:
+                logging.warning(
+                    "Feature count mismatch for non-DataFrame input: expected=%d, got=%d",
+                    expected_count,
+                    actual_count,
+                )
+                if actual_count > expected_count:
+                    if sparse.issparse(data):
+                        data = data[:, :expected_count]
+                    else:
+                        data = np.asarray(data)[:, :expected_count]
+                else:
+                    pad = expected_count - actual_count
+                    if sparse.issparse(data):
+                        data = sparse.hstack(
+                            [data, sparse.csr_matrix((data.shape[0], pad))],
+                            format="csr",
+                        )
+                    else:
+                        data = np.pad(
+                            np.asarray(data),
+                            ((0, 0), (0, pad)),
+                            mode="constant",
+                        )
             return data
 
         debug_features = os.getenv("EVENTALYZER_DEBUG_FEATURES") == "1"
