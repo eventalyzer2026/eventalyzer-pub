@@ -1,0 +1,68 @@
+version: "3.9"
+services:
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false            # enable + set passwords in prod
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports: ["9200:9200"]
+    volumes: ["es-data:/usr/share/elasticsearch/data"]
+
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.13.4
+    ports: ["5044:5044", "9600:9600"]
+    volumes:
+      - ./logstash/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - ./logstash:/usr/share/logstash/pipeline:ro           # ecs_conf.conf, ecs_syslog_access.conf
+    environment:
+      - LS_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.monitoring.enabled=false
+    restart: unless-stopped
+    depends_on:
+      - elasticsearch
+
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    ports: ["5601:5601"]
+    restart: unless-stopped
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+
+
+  filebeat:                                   # example shipper
+    image: docker.elastic.co/beats/filebeat:8.13.4
+    user: root
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - ../../logs:/var/log/test_logs:ro                     # same path logstash reads from
+    depends_on: [logstash]
+
+  eventalyzer:
+    build: ../src
+    ports: ["8000:8000"]
+    depends_on:
+      - logstash
+      - elasticsearch
+
+  eventalyzer_agent:
+    build: ../src
+    command: ["python", "./app/src/agent.py"]
+    depends_on:
+      - elasticsearch
+      - eventalyzer
+    environment:
+      - ES_URL=http://elasticsearch:9200
+      - EVENTALYZER_URL=http://eventalyzer:8000
+      - RAW_INDEX_PATTERN=raw-logs-*
+      - RESULTS_INDEX_PREFIX=ml-results
+      - AGENT_POLL_INTERVAL=5
+      - AGENT_BATCH_SIZE=20
+
+volumes:
+  es-data:
