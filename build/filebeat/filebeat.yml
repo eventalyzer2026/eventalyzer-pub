@@ -1,7 +1,7 @@
 filebeat.inputs:
   - type: filestream
     id: apache
-    paths: ["/var/log/test_logs/*_access.log"]
+    paths: ["/var/log/test_logs/*access.log"]
     encoding: utf-8
     fields_under_root: true
 

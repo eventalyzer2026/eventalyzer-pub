@@ -1,4 +1,3 @@
-version: "3.9"
 services:
 
   elasticsearch:
@@ -17,6 +16,7 @@ services:
     volumes:
       - ./logstash/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
       - ./logstash:/usr/share/logstash/pipeline:ro           # ecs_conf.conf, ecs_syslog_access.conf
+      - ../../parsed_logs:/usr/share/logstash/parsed_logs:rw
     environment:
       - LS_JAVA_OPTS=-Xms512m -Xmx512m
       - xpack.monitoring.enabled=false
@@ -40,12 +40,14 @@ services:
     user: root
     volumes:
       - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
-      - ../../logs:/var/log/test_logs:ro                     # same path logstash reads from
+      - ../../logs/:/var/log/test_logs:ro                     # same path logstash reads from
     depends_on: [logstash]
 
   eventalyzer:
     build: ../src
     ports: ["8000:8000"]
+    environment:
+      - EVENTALYZER_ANOMALY_THRESHOLD=0.30
     depends_on:
       - logstash
       - elasticsearch
