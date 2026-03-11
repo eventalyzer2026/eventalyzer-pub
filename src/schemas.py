@@ -16,17 +16,13 @@ class ECSLog(BaseModel):
     timestamp: Optional[str] = None
 
     class Config:
-        extra = "allow"   # 🔥 КРИТИЧНО
+        extra = "allow"
 
 
 class OnlinePredictRequest(BaseModel):
     log: ECSLog
     model_version: Optional[str] = None
     return_proba: bool = False
-    write_to_es: bool = False
-    source_doc_id: Optional[str] = None
-    source_index: Optional[str] = None
-    results_index_prefix: Optional[str] = None
 
 
 class OnlinePredictResponse(BaseModel):
@@ -52,13 +48,23 @@ class OfflineTrainResponse(BaseModel):
 
 
 class BatchClassifyRequest(BaseModel):
-    raw_index_pattern: Optional[str] = None
-    results_index_prefix: Optional[str] = None
-    size: int = 100
-    query: Optional[Dict[str, Any]] = None
+    logs: List[ECSLog]
+    model_version: Optional[str] = None
+    return_proba: bool = True
+
+
+class BatchClassifyItemResponse(BaseModel):
+    index: int
+    cluster: Optional[int] = None
+    proba: Optional[float] = None
+    model_version: Optional[str] = None
+    detail: Optional[str] = None
+    elapsed: Optional[float] = None
+    error: Optional[str] = None
 
 
 class BatchClassifyResponse(BaseModel):
     processed: int
-    indexed: int
-    errors: Optional[List[str]] = None
+    succeeded: int
+    failed: int
+    results: List[BatchClassifyItemResponse]

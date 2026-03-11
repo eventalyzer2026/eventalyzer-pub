@@ -255,5 +255,3 @@ class LogVertorizer:
         df = df.drop(['url.directory', 'url.file', 'http.request.referrer'], axis=1)
         return X_hashed, df
 
-    def dump_vectorizer(self):
-        pass

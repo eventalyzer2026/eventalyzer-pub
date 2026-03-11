@@ -5,4 +5,3 @@ from app.src.clusterer import LogClustererModel
 vectorizer: LogVertorizer = None
 classifier: LogClassificatorModel = None
 clusterer: LogClustererModel = None
-es_available: bool = False

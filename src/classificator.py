@@ -1,6 +1,7 @@
 import joblib
 import logging
 import os
+import sys
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -11,19 +12,139 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
 
+class TwoStageLogReg:
+    """
+    Compatibility class for loading legacy notebooks models serialized as
+    __mp_main__.TwoStageLogReg.
+    """
+
+    def __init__(self):
+        self.anomaly_threshold = 0.40
+        self.anomaly_label = -1
+        self.anomaly_pipe = None
+        self.normal_pipe = None
+        self.single_normal_class_ = None
+        self.classes_ = None
+
+    @property
+    def n_features_in_(self):
+        if self.anomaly_pipe is not None:
+            return getattr(self.anomaly_pipe, "n_features_in_", None)
+        if self.normal_pipe is not None:
+            return getattr(self.normal_pipe, "n_features_in_", None)
+        return None
+
+    @property
+    def feature_names_in_(self):
+        if self.anomaly_pipe is not None:
+            return getattr(self.anomaly_pipe, "feature_names_in_", None)
+        if self.normal_pipe is not None:
+            return getattr(self.normal_pipe, "feature_names_in_", None)
+        return None
+
+    def anomaly_proba(self, X):
+        if self.anomaly_pipe is None:
+            return np.zeros(X.shape[0], dtype=float)
+        classes = list(getattr(self.anomaly_pipe, "classes_", []))
+        if 1 in classes:
+            idx = classes.index(1)
+            return self.anomaly_pipe.predict_proba(X)[:, idx]
+        if len(classes) == 2:
+            # fallback for binary encodings that are not {0,1}
+            return self.anomaly_pipe.predict_proba(X)[:, -1]
+        return np.zeros(X.shape[0], dtype=float)
+
+    def predict(self, X):
+        p_anom = self.anomaly_proba(X)
+        thr = float(getattr(self, "anomaly_threshold", 0.40))
+        anomaly_label = int(getattr(self, "anomaly_label", -1))
+
+        if getattr(self, "normal_pipe", None) is not None:
+            normal_pred = self.normal_pipe.predict(X)
+        elif getattr(self, "single_normal_class_", None) is not None:
+            normal_pred = np.full(X.shape[0], self.single_normal_class_)
+        else:
+            normal_pred = np.full(X.shape[0], anomaly_label)
+
+        pred = np.asarray(normal_pred).copy()
+        pred[p_anom >= thr] = anomaly_label
+        return pred
+
+    def predict_proba(self, X):
+        classes = getattr(self, "classes_", None)
+        if classes is None:
+            classes = [int(getattr(self, "anomaly_label", -1))]
+            normal_pipe = getattr(self, "normal_pipe", None)
+            if normal_pipe is not None:
+                classes.extend(list(getattr(normal_pipe, "classes_", [])))
+            elif getattr(self, "single_normal_class_", None) is not None:
+                classes.append(self.single_normal_class_)
+            classes = np.unique(np.asarray(classes))
+            self.classes_ = classes
+        classes = np.asarray(classes)
+
+        out = np.zeros((X.shape[0], len(classes)), dtype=float)
+        class_to_idx = {c: i for i, c in enumerate(classes.tolist())}
+
+        anomaly_label = int(getattr(self, "anomaly_label", -1))
+        anomaly_idx = class_to_idx.get(anomaly_label)
+        p_anom = self.anomaly_proba(X)
+        p_normal = 1.0 - p_anom
+
+        if anomaly_idx is not None:
+            out[:, anomaly_idx] = p_anom
+
+        normal_pipe = getattr(self, "normal_pipe", None)
+        if normal_pipe is not None:
+            normal_classes = list(getattr(normal_pipe, "classes_", []))
+            normal_proba = normal_pipe.predict_proba(X)
+            for idx, cls in enumerate(normal_classes):
+                out_idx = class_to_idx.get(cls)
+                if out_idx is not None:
+                    out[:, out_idx] = p_normal * normal_proba[:, idx]
+        elif getattr(self, "single_normal_class_", None) is not None:
+            out_idx = class_to_idx.get(self.single_normal_class_)
+            if out_idx is not None:
+                out[:, out_idx] = p_normal
+
+        row_sum = out.sum(axis=1, keepdims=True)
+        valid = row_sum[:, 0] > 0
+        out[valid] = out[valid] / row_sum[valid]
+        return out
+
+
+def _register_legacy_pickle_symbols() -> None:
+    for mod_name in ("__mp_main__", "__main__"):
+        module = sys.modules.get(mod_name)
+        if module is not None and not hasattr(module, "TwoStageLogReg"):
+            setattr(module, "TwoStageLogReg", TwoStageLogReg)
+
+
+_register_legacy_pickle_symbols()
+
+
 class LogClassificatorModel:
     def __init__(self, model_filepath: str = None):
         if model_filepath is None or model_filepath == "":
             self.pipe = Pipeline([
-                ('scaler', StandardScaler(with_mean=False)),  # IMPORTANT for sparse data
-                ('clf', LogisticRegression(
+                ("scaler", StandardScaler(with_mean=False)),
+                ("clf", LogisticRegression(
                     max_iter=3000,
                     n_jobs=-1,
-                    solver='lbfgs'
+                    solver="saga"   # для sparse обычно стабильнее
                 ))
             ])
         else:
             self.pipe = joblib.load(model_filepath)
+
+        # Allow runtime tuning for two-stage models restored from artifacts.
+        env_threshold = os.getenv("EVENTALYZER_ANOMALY_THRESHOLD")
+        if env_threshold is not None and hasattr(self.pipe, "anomaly_threshold"):
+            try:
+                self.pipe.anomaly_threshold = float(env_threshold)
+                logging.info("Applied EVENTALYZER_ANOMALY_THRESHOLD=%s", env_threshold)
+            except ValueError:
+                logging.warning("Invalid EVENTALYZER_ANOMALY_THRESHOLD=%r", env_threshold)
 
     def learn(self, data: pd.DataFrame):
         X = data.drop('cluster', axis=1)
@@ -113,11 +234,14 @@ class LogClassificatorModel:
 
         missing = [col for col in expected if col not in data.columns]
         extra = [col for col in data.columns if col not in expected]
+
         if missing:
             for col in missing:
                 data[col] = 0
+
         if extra:
             data = data.drop(columns=extra)
+
         if missing or extra:
             logging.warning(
                 "Feature mismatch: expected=%d, got=%d, missing=%d, extra=%d",
@@ -126,9 +250,11 @@ class LogClassificatorModel:
                 len(missing),
                 len(extra),
             )
+
             if debug_features:
                 logging.warning("Missing sample: %s", missing[:40])
                 logging.warning("Extra sample: %s", extra[:40])
+                
         return data[expected]
 
     def classify(self, data: pd.DataFrame) -> pd.DataFrame:
