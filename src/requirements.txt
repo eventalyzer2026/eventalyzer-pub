@@ -4,3 +4,4 @@ pandas
 numpy
 fastapi
 uvicorn
+requests

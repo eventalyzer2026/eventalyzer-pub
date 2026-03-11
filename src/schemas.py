@@ -23,6 +23,10 @@ class OnlinePredictRequest(BaseModel):
     log: ECSLog
     model_version: Optional[str] = None
     return_proba: bool = False
+    write_to_es: bool = False
+    source_doc_id: Optional[str] = None
+    source_index: Optional[str] = None
+    results_index_prefix: Optional[str] = None
 
 
 class OnlinePredictResponse(BaseModel):
@@ -45,3 +49,16 @@ class OfflineTrainResponse(BaseModel):
     model_version: str
     status: str
     detail: Optional[str] = None
+
+
+class BatchClassifyRequest(BaseModel):
+    raw_index_pattern: Optional[str] = None
+    results_index_prefix: Optional[str] = None
+    size: int = 100
+    query: Optional[Dict[str, Any]] = None
+
+
+class BatchClassifyResponse(BaseModel):
+    processed: int
+    indexed: int
+    errors: Optional[List[str]] = None
