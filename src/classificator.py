@@ -268,5 +268,24 @@ class LogClassificatorModel:
         data = self._align_features(data)
         return self.pipe.predict_proba(self._to_model_input(data))
 
+    def predict_anomaly_proba(self, data: pd.DataFrame):
+        """Probability for anomaly class (-1) when available."""
+        data = self._align_features(data)
+        model_input = self._to_model_input(data)
+
+        if hasattr(self.pipe, "anomaly_proba"):
+            return np.asarray(self.pipe.anomaly_proba(model_input), dtype=float)
+
+        if hasattr(self.pipe, "predict_proba"):
+            proba = self.pipe.predict_proba(model_input)
+            classes = getattr(self.pipe, "classes_", None)
+            if classes is not None:
+                classes = list(classes)
+                if -1 in classes:
+                    return np.asarray(proba[:, classes.index(-1)], dtype=float)
+            return np.zeros(proba.shape[0], dtype=float)
+
+        raise AttributeError("Underlying classifier does not support anomaly probability estimates")
+
     def dump_model(self, filename: str) -> list:
         return joblib.dump(self.pipe, filename)

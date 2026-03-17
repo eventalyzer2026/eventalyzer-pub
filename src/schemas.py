@@ -28,6 +28,7 @@ class OnlinePredictRequest(BaseModel):
 class OnlinePredictResponse(BaseModel):
     cluster: Optional[int] = None
     proba: Optional[float] = None
+    anomaly_proba: Optional[float] = None
     model_version: Optional[str] = None
     detail: Optional[str] = None
     elapsed: Optional[float] = None
@@ -57,6 +58,7 @@ class BatchClassifyItemResponse(BaseModel):
     index: int
     cluster: Optional[int] = None
     proba: Optional[float] = None
+    anomaly_proba: Optional[float] = None
     model_version: Optional[str] = None
     detail: Optional[str] = None
     elapsed: Optional[float] = None

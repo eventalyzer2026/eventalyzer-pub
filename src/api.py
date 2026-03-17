@@ -65,7 +65,14 @@ def _predict_internal(log: ECSLog, return_proba: bool = False, model_version: Op
     pred = ass.classifier.classify(df)
 
     proba = None
+    anomaly_proba = None
     detail = None
+
+    try:
+        anomaly_proba_arr = ass.classifier.predict_anomaly_proba(df)
+        anomaly_proba = float(anomaly_proba_arr[0])
+    except Exception:
+        anomaly_proba = None
 
     if return_proba:
         proba_arr = ass.classifier.predict_proba(df)
@@ -87,6 +94,7 @@ def _predict_internal(log: ECSLog, return_proba: bool = False, model_version: Op
     return OnlinePredictResponse(
         cluster=int(pred[0]),
         proba=proba,
+        anomaly_proba=anomaly_proba,
         model_version=model_version or MODEL_VERSION,
         elapsed=t2 - t1,
         detail=detail,
@@ -128,6 +136,7 @@ def batch_classify(request: BatchClassifyRequest):
                     index=idx,
                     cluster=response.cluster,
                     proba=response.proba,
+                    anomaly_proba=response.anomaly_proba,
                     model_version=response.model_version,
                     detail=response.detail,
                     elapsed=response.elapsed,
