@@ -47,7 +47,7 @@ services:
     build: ../src
     ports: ["8000:8000"]
     environment:
-      - EVENTALYZER_ANOMALY_THRESHOLD=0.30
+      - EVENTALYZER_ANOMALY_THRESHOLD=0.87
     depends_on:
       - logstash
       - elasticsearch
